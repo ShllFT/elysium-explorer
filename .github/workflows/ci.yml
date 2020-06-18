@@ -26,10 +26,8 @@ jobs:
       run: npm install
     - name: Build
       run: npm run build
-    - name: Prepare Files for Artifact
-      run: mv -v build elysium-explorer
     - name: Upload Artifact
       uses: actions/upload-artifact@v2
       with:
         name: elysium-explorer
-        path: elysium-explorer
+        path: build
