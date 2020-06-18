@@ -17,6 +17,11 @@ jobs:
       uses: actions/setup-node@v1
       with:
         node-version: '12'
+    - name: Set Up Dependencies Caching
+      uses: actions/cache@v2
+      with:
+        path: node_modules
+        key: dependencies
     - name: Install Dependencies
       run: npm install
     - name: Build
