@@ -1,0 +1,126 @@
+name: Continuous Deployment
+on:
+  push:
+    tags:
+    - '*'
+env:
+  RELEASE_ARTIFACT: elysium-explorer
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-18.04
+    steps:
+    - name: Checkout Source
+      uses: actions/checkout@v2
+    - name: Set Up Node.js
+      uses: actions/setup-node@v1
+      with:
+        node-version: '12'
+    - name: Set Up Dependencies Caching
+      uses: actions/cache@v2
+      with:
+        path: node_modules
+        key: dependencies
+    - name: Install Dependencies
+      run: npm install
+    - name: Build
+      run: npm run build
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ env.RELEASE_ARTIFACT }}
+        path: build
+  release:
+    name: Release
+    runs-on: ubuntu-18.04
+    needs: build
+    env:
+      EXPLORER_DIR: elysium-explorer
+    steps:
+    - name: Download Artifact
+      uses: actions/download-artifact@v2
+      with:
+        name: ${{ env.RELEASE_ARTIFACT }}
+        path: ${{ env.EXPLORER_DIR }}
+    - id: release-info
+      name: Generate Release Information
+      shell: python
+      run: |
+        import os
+        import re
+
+        ref = os.environ['GITHUB_REF']
+        tag = re.match(r'^refs/tags/(.+)$', ref).group(1)
+        pre_release = '-' in tag
+
+        print('Tag Reference: {0}'.format(ref))
+        print('Tag Name     : {0}'.format(tag))
+        print('Pre-release  : {0}'.format(pre_release))
+
+        print('::set-output name=version::{0}'.format(tag))
+        print('::set-output name=pre-release::{0}'.format(str(pre_release).lower()))
+    - id: release-assets
+      name: Create Release Assets
+      run: |
+        version="${{ steps.release-info.outputs.version }}"
+        zip="elysium-explorer-${version}.zip"
+        tar="elysium-explorer-${version}.tar.gz"
+
+        echo "==> Create ZIP distribution"
+        zip -r -9 -v "$zip" "$EXPLORER_DIR"
+
+        echo "==> Create TAR distribution"
+        tar -cvzf "$tar" "$EXPLORER_DIR"
+
+        echo "::set-output name=zip-name::$zip"
+        echo "::set-output name=zip-type::application/zip"
+
+        echo "::set-output name=tar-name::$tar"
+        echo "::set-output name=tar-type::application/gzip"
+    - id: draft-release
+      name: Draft Release
+      uses: actions/create-release@v1
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: ${{ steps.release-info.outputs.version }}
+        draft: true
+        prerelease: ${{ steps.release-info.outputs.pre-release }}
+    - name: Upload Zip Distribution
+      uses: actions/upload-release-asset@v1
+      with:
+        upload_url: ${{ steps.draft-release.outputs.upload_url }}
+        asset_name: ${{ steps.release-assets.outputs.zip-name }}
+        asset_path: ${{ steps.release-assets.outputs.zip-name }}
+        asset_content_type: ${{ steps.release-assets.outputs.zip-type }}
+    - name: Upload Tar Distribution
+      uses: actions/upload-release-asset@v1
+      with:
+        upload_url: ${{ steps.draft-release.outputs.upload_url }}
+        asset_name: ${{ steps.release-assets.outputs.tar-name }}
+        asset_path: ${{ steps.release-assets.outputs.tar-name }}
+        asset_content_type: ${{ steps.release-assets.outputs.tar-type }}
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-18.04
+    needs: build
+    env:
+      EXPLORER_DIR: explorer
+      SERVER_HOSTNAME: elysium.zcoin.io
+      SERVER_FINGERPRINT: ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBA6H+tyZSPinc1opbBHjhd3igiFhX2XHINHMPpBXCMGpom9n/SQPHmgI4VYl7xv67JEhNd5oxnd2W417dZdKGM0=
+      SERVER_USERNAME: elysium
+      SERVER_EXPLORER_DIR: /opt/elysium/explorer
+      SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+    steps:
+    - name: Download Artifact
+      uses: actions/download-artifact@v2
+      with:
+        name: ${{ env.RELEASE_ARTIFACT }}
+        path: ${{ env.EXPLORER_DIR }}
+    - name: Install Required System Packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y openssh-client rsync sshpass
+    - name: Add ${{ env.SERVER_HOSTNAME }} to Known Host
+      run: echo "$SERVER_HOSTNAME $SERVER_FINGERPRINT" >> "$HOME/.ssh/known_hosts"
+    - name: Deploy Explorer
+      run: rsync -vrlED --chmod=ugo=rwX -e "sshpass -e ssh" "$EXPLORER_DIR/" "${SERVER_USERNAME}@${SERVER_HOSTNAME}:${SERVER_EXPLORER_DIR}/"
